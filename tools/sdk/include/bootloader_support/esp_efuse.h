@@ -15,6 +15,7 @@
 #define _ESP_EFUSE_H
 
 #include "soc/efuse_reg.h"
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +48,55 @@ void esp_efuse_burn_new_values(void);
  * any changes that have been staged here.
  */
 void esp_efuse_reset(void);
+
+/* @brief Disable BASIC ROM Console via efuse
+ *
+ * By default, if booting from flash fails the ESP32 will boot a
+ * BASIC console in ROM.
+ *
+ * Call this function (from bootloader or app) to permanently
+ * disable the console on this chip.
+ */
+void esp_efuse_disable_basic_rom_console(void);
+
+/* @brief Encode one or more sets of 6 byte sequences into
+ * 8 bytes suitable for 3/4 Coding Scheme.
+ *
+ * This function is only useful if the CODING_SCHEME efuse
+ * is set to value 1 for 3/4 Coding Scheme.
+ *
+ * @param[in] in_bytes Pointer to a sequence of bytes to encode for 3/4 Coding Scheme. Must have length in_bytes_len. After being written to hardware, these bytes will read back as little-endian words.
+ * @param[out] out_words Pointer to array of words suitable for writing to efuse write registers. Array must contain 2 words (8 bytes) for every 6 bytes in in_bytes_len. Can be a pointer to efuse write registers.
+ * @param in_bytes_len. Length of array pointed to by in_bytes, in bytes. Must be a multiple of 6.
+ *
+ * @return ESP_ERR_INVALID_ARG if either pointer is null or in_bytes_len is not a multiple of 6. ESP_OK otherwise.
+ */
+esp_err_t esp_efuse_apply_34_encoding(const uint8_t *in_bytes, uint32_t *out_words, size_t in_bytes_len);
+
+/* @brief Write random data to efuse key block write registers
+ *
+ * @note Caller is responsible for ensuring efuse
+ * block is empty and not write protected, before calling.
+ *
+ * @note Behaviour depends on coding scheme: a 256-bit key is
+ * generated and written for Coding Scheme "None", a 192-bit key
+ * is generated, extended to 256-bits by the Coding Scheme,
+ * and then writtten for 3/4 Coding Scheme.
+ *
+ * @note This function does not burn the new values, caller should
+ * call esp_efuse_burn_new_values() when ready to do this.
+ *
+ * @param blk_wdata0_reg Address of the first data write register
+ * in the block
+ */
+void esp_efuse_write_random_key(uint32_t blk_wdata0_reg);
+
+/**
+ * @brief   Returns chip version from efuse
+ *
+ * @return chip version
+ */
+uint8_t esp_efuse_get_chip_ver(void);
 
 #ifdef __cplusplus
 }

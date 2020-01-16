@@ -33,6 +33,7 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "esp32-hal.h"
+#include "esp8266-compat.h"
 #include "soc/gpio_reg.h"
 
 #include "stdlib_noniso.h"
@@ -67,14 +68,7 @@
 #define __STRINGIFY(a) #a
 #endif
 
-// undefine stdlib's abs if encountered
-#ifdef abs
-#undef abs
-#endif
-
-#define abs(x) ((x)>0?(x):-(x))
 #define constrain(amt,low,high) ((amt)<(low)?(low):((amt)>(high)?(high):(amt)))
-#define round(x)     ((x)>=0?(long)((x)+0.5):(long)((x)-0.5))
 #define radians(deg) ((deg)*DEG_TO_RAD)
 #define degrees(rad) ((rad)*RAD_TO_DEG)
 #define sq(x) ((x)*(x))
@@ -145,6 +139,9 @@ void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val);
 #ifdef __cplusplus
 }
 
+#include <algorithm>
+#include <cmath>
+
 #include "WCharacter.h"
 #include "WString.h"
 #include "Stream.h"
@@ -157,6 +154,13 @@ void shiftOut(uint8_t dataPin, uint8_t clockPin, uint8_t bitOrder, uint8_t val);
 #include "HardwareSerial.h"
 #include "Esp.h"
 
+using std::abs;
+using std::isinf;
+using std::isnan;
+using std::max;
+using std::min;
+using ::round;
+
 uint16_t makeWord(uint16_t w);
 uint16_t makeWord(byte h, byte l);
 
@@ -168,16 +172,12 @@ unsigned long pulseInLong(uint8_t pin, uint8_t state, unsigned long timeout = 10
 extern "C" bool getLocalTime(struct tm * info, uint32_t ms = 5000);
 extern "C" void configTime(long gmtOffset_sec, int daylightOffset_sec,
         const char* server1, const char* server2 = nullptr, const char* server3 = nullptr);
+extern "C" void configTzTime(const char* tz,
+        const char* server1, const char* server2 = nullptr, const char* server3 = nullptr);
 
 // WMath prototypes
 long random(long);
 #endif /* __cplusplus */
-
-#ifndef _GLIBCXX_VECTOR
-// arduino is not compatible with std::vector
-#define min(a,b) ((a)<(b)?(a):(b))
-#define max(a,b) ((a)>(b)?(a):(b))
-#endif
 
 #define _min(a,b) ((a)<(b)?(a):(b))
 #define _max(a,b) ((a)>(b)?(a):(b))

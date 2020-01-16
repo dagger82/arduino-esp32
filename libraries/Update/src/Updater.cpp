@@ -35,15 +35,49 @@ static const char * _err2str(uint8_t _error){
     return ("UNKNOWN");
 }
 
+static bool _partitionIsBootable(const esp_partition_t* partition){
+    uint8_t buf[4];
+    if(!partition){
+        return false;
+    }
+    if(!ESP.flashRead(partition->address, (uint32_t*)buf, 4)) {
+        return false;
+    }
+
+    if(buf[0] != ESP_IMAGE_HEADER_MAGIC) {
+        return false;
+    }
+    return true;
+}
+
+static bool _enablePartition(const esp_partition_t* partition){
+    uint8_t buf[4];
+    if(!partition){
+        return false;
+    }
+    if(!ESP.flashRead(partition->address, (uint32_t*)buf, 4)) {
+        return false;
+    }
+    buf[0] = ESP_IMAGE_HEADER_MAGIC;
+
+    return ESP.flashWrite(partition->address, (uint32_t*)buf, 4);
+}
+
 UpdateClass::UpdateClass()
 : _error(0)
 , _buffer(0)
 , _bufferLen(0)
 , _size(0)
+, _progress_callback(NULL)
 , _progress(0)
 , _command(U_FLASH)
 , _partition(NULL)
 {
+}
+
+UpdateClass& UpdateClass::onProgress(THandlerFunction_Progress fn) {
+    _progress_callback = fn;
+    return *this;
 }
 
 void UpdateClass::_reset() {
@@ -54,13 +88,36 @@ void UpdateClass::_reset() {
     _progress = 0;
     _size = 0;
     _command = U_FLASH;
+
+    if(_ledPin != -1) {
+      digitalWrite(_ledPin, !_ledOn); // off
+    }
 }
 
-bool UpdateClass::begin(size_t size, int command) {
+bool UpdateClass::canRollBack(){
+    if(_buffer){ //Update is running
+        return false;
+    }
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(NULL);
+    return _partitionIsBootable(partition);
+}
+
+bool UpdateClass::rollBack(){
+    if(_buffer){ //Update is running
+        return false;
+    }
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(NULL);
+    return _partitionIsBootable(partition) && !esp_ota_set_boot_partition(partition);
+}
+
+bool UpdateClass::begin(size_t size, int command, int ledPin, uint8_t ledOn) {
     if(_size > 0){
         log_w("already running");
         return false;
     }
+
+    _ledPin = ledPin;
+    _ledOn = !!ledOn; // 0(LOW) or 1(HIGH)
 
     _reset();
     _error = 0;
@@ -121,6 +178,20 @@ void UpdateClass::abort(){
 }
 
 bool UpdateClass::_writeBuffer(){
+    //first bytes of new firmware
+    if(!_progress && _command == U_FLASH){
+        //check magic
+        if(_buffer[0] != ESP_IMAGE_HEADER_MAGIC){
+            _abort(UPDATE_ERROR_MAGIC_BYTE);
+            return false;
+        }
+        //remove magic byte from the firmware now and write it upon success
+        //this ensures that partially written firmware will not be bootable
+        _buffer[0] = 0xFF;
+    }
+    if (!_progress && _progress_callback) {
+        _progress_callback(0, _size);
+    }
     if(!ESP.flashEraseSector((_partition->address + _progress)/SPI_FLASH_SEC_SIZE)){
         _abort(UPDATE_ERROR_ERASE);
         return false;
@@ -129,9 +200,16 @@ bool UpdateClass::_writeBuffer(){
         _abort(UPDATE_ERROR_WRITE);
         return false;
     }
+    //restore magic or md5 will fail
+    if(!_progress && _command == U_FLASH){
+        _buffer[0] = ESP_IMAGE_HEADER_MAGIC;
+    }
     _md5.add(_buffer, _bufferLen);
     _progress += _bufferLen;
     _bufferLen = 0;
+    if (_progress_callback) {
+        _progress_callback(_progress, _size);
+    }
     return true;
 }
 
@@ -150,14 +228,8 @@ bool UpdateClass::_verifyHeader(uint8_t data) {
 
 bool UpdateClass::_verifyEnd() {
     if(_command == U_FLASH) {
-        uint8_t buf[4];
-        if(!ESP.flashRead(_partition->address, (uint32_t*)buf, 4)) {
+        if(!_enablePartition(_partition) || !_partitionIsBootable(_partition)) {
             _abort(UPDATE_ERROR_READ);
-            return false;
-        }
-
-        if(buf[0] != ESP_IMAGE_HEADER_MAGIC) {
-            _abort(UPDATE_ERROR_MAGIC_BYTE);
             return false;
         }
 
@@ -168,6 +240,7 @@ bool UpdateClass::_verifyEnd() {
         _reset();
         return true;
     } else if(_command == U_SPIFFS) {
+        _reset();
         return true;
     }
     return false;
@@ -253,15 +326,30 @@ size_t UpdateClass::writeStream(Stream &data) {
         return 0;
     }
 
+    if(_ledPin != -1) {
+        pinMode(_ledPin, OUTPUT);
+    }
+
     while(remaining()) {
-        toRead = data.readBytes(_buffer + _bufferLen,  (SPI_FLASH_SEC_SIZE - _bufferLen));
+        if(_ledPin != -1) {
+            digitalWrite(_ledPin, _ledOn); // Switch LED on
+        }
+        size_t bytesToRead = SPI_FLASH_SEC_SIZE - _bufferLen;
+        if(bytesToRead > remaining()) {
+            bytesToRead = remaining();
+        }
+
+        toRead = data.readBytes(_buffer + _bufferLen,  bytesToRead);
         if(toRead == 0) { //Timeout
             delay(100);
-            toRead = data.readBytes(_buffer + _bufferLen, (SPI_FLASH_SEC_SIZE - _bufferLen));
+            toRead = data.readBytes(_buffer + _bufferLen, bytesToRead);
             if(toRead == 0) { //Timeout
                 _abort(UPDATE_ERROR_STREAM);
                 return written;
             }
+        }
+        if(_ledPin != -1) {
+            digitalWrite(_ledPin, !_ledOn); // Switch LED off
         }
         _bufferLen += toRead;
         if((_bufferLen == remaining() || _bufferLen == SPI_FLASH_SEC_SIZE) && !_writeBuffer())
@@ -273,6 +361,10 @@ size_t UpdateClass::writeStream(Stream &data) {
 
 void UpdateClass::printError(Stream &out){
     out.println(_err2str(_error));
+}
+
+const char * UpdateClass::errorString(){
+    return _err2str(_error);
 }
 
 UpdateClass Update;

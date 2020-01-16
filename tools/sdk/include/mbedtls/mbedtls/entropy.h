@@ -2,7 +2,8 @@
  * \file entropy.h
  *
  * \brief Entropy accumulator implementation
- *
+ */
+/*
  *  Copyright (C) 2006-2016, ARM Limited, All Rights Reserved
  *  SPDX-License-Identifier: Apache-2.0
  *
@@ -106,7 +107,7 @@ typedef int (*mbedtls_entropy_f_source_ptr)(void *data, unsigned char *output, s
 /**
  * \brief           Entropy source state
  */
-typedef struct
+typedef struct mbedtls_entropy_source_state
 {
     mbedtls_entropy_f_source_ptr    f_source;   /**< The entropy source callback */
     void *          p_source;   /**< The callback data pointer */
@@ -119,8 +120,9 @@ mbedtls_entropy_source_state;
 /**
  * \brief           Entropy context structure
  */
-typedef struct
+typedef struct mbedtls_entropy_context
 {
+    int accumulator_started;
 #if defined(MBEDTLS_ENTROPY_SHA512_ACCUMULATOR)
     mbedtls_sha512_context  accumulator;
 #else
@@ -164,7 +166,7 @@ void mbedtls_entropy_free( mbedtls_entropy_context *ctx );
  * \param threshold Minimum required from source before entropy is released
  *                  ( with mbedtls_entropy_func() ) (in bytes)
  * \param strong    MBEDTLS_ENTROPY_SOURCE_STRONG or
- *                  MBEDTSL_ENTROPY_SOURCE_WEAK.
+ *                  MBEDTLS_ENTROPY_SOURCE_WEAK.
  *                  At least one strong source needs to be added.
  *                  Weaker sources (such as the cycle counter) can be used as
  *                  a complement.
@@ -255,9 +257,29 @@ int mbedtls_entropy_update_seed_file( mbedtls_entropy_context *ctx, const char *
 /**
  * \brief          Checkup routine
  *
+ *                 This module self-test also calls the entropy self-test,
+ *                 mbedtls_entropy_source_self_test();
+ *
  * \return         0 if successful, or 1 if a test failed
  */
 int mbedtls_entropy_self_test( int verbose );
+
+#if defined(MBEDTLS_ENTROPY_HARDWARE_ALT)
+/**
+ * \brief          Checkup routine
+ *
+ *                 Verifies the integrity of the hardware entropy source
+ *                 provided by the function 'mbedtls_hardware_poll()'.
+ *
+ *                 Note this is the only hardware entropy source that is known
+ *                 at link time, and other entropy sources configured
+ *                 dynamically at runtime by the function
+ *                 mbedtls_entropy_add_source() will not be tested.
+ *
+ * \return         0 if successful, or 1 if a test failed
+ */
+int mbedtls_entropy_source_self_test( int verbose );
+#endif /* MBEDTLS_ENTROPY_HARDWARE_ALT */
 #endif /* MBEDTLS_SELF_TEST */
 
 #ifdef __cplusplus

@@ -50,25 +50,28 @@ extern "C" {
   *     0x3ff80000(0x400c0000)  Fast    8192            deep sleep entry code
   *
   *************************************************************************************
-  *     Rtc store registers     usage
-  *     RTC_CNTL_STORE0_REG
-  *     RTC_CNTL_STORE1_REG
+  *     RTC store registers     usage
+  *     RTC_CNTL_STORE0_REG     Reserved
+  *     RTC_CNTL_STORE1_REG     RTC_SLOW_CLK calibration value
   *     RTC_CNTL_STORE2_REG     Boot time, low word
   *     RTC_CNTL_STORE3_REG     Boot time, high word
-  *     RTC_CNTL_STORE4_REG     External XTAL frequency
+  *     RTC_CNTL_STORE4_REG     External XTAL frequency. The frequency must necessarily be even, otherwise there will be a conflict with the low bit, which is used to disable logs in the ROM code.
   *     RTC_CNTL_STORE5_REG     APB bus frequency
   *     RTC_CNTL_STORE6_REG     FAST_RTC_MEMORY_ENTRY
   *     RTC_CNTL_STORE7_REG     FAST_RTC_MEMORY_CRC
   *************************************************************************************
   */
 
+#define RTC_SLOW_CLK_CAL_REG    RTC_CNTL_STORE1_REG
 #define RTC_BOOT_TIME_LOW_REG   RTC_CNTL_STORE2_REG
 #define RTC_BOOT_TIME_HIGH_REG  RTC_CNTL_STORE3_REG
 #define RTC_XTAL_FREQ_REG       RTC_CNTL_STORE4_REG
 #define RTC_APB_FREQ_REG        RTC_CNTL_STORE5_REG
 #define RTC_ENTRY_ADDR_REG      RTC_CNTL_STORE6_REG
+#define RTC_RESET_CAUSE_REG     RTC_CNTL_STORE6_REG
 #define RTC_MEMORY_CRC_REG      RTC_CNTL_STORE7_REG
 
+#define RTC_DISABLE_ROM_LOG ((1 << 0) | (1 << 16)) //!< Disable logging from the ROM code.
 
 typedef enum {
     AWAKE = 0,             //<CPU ON
@@ -191,7 +194,7 @@ void set_rtc_memory_crc(void);
   *
   * @return None
   */
-void software_reset(void);
+void __attribute__((noreturn)) software_reset(void);
 
 /**
   * @brief Software Reset digital core.

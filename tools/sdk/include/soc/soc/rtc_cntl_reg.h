@@ -432,6 +432,7 @@
 #define RTC_CNTL_MIN_SLP_VAL_M  ((RTC_CNTL_MIN_SLP_VAL_V)<<(RTC_CNTL_MIN_SLP_VAL_S))
 #define RTC_CNTL_MIN_SLP_VAL_V  0xFF
 #define RTC_CNTL_MIN_SLP_VAL_S  8
+#define RTC_CNTL_MIN_SLP_VAL_MIN 2
 /* RTC_CNTL_ULP_CP_SUBTIMER_PREDIV : R/W ;bitpos:[7:0] ;default: 8'd1 ; */
 /*description: */
 #define RTC_CNTL_ULP_CP_SUBTIMER_PREDIV  0x000000FF
@@ -1069,7 +1070,7 @@
 #define RTC_CNTL_DBG_ATTEN_M  ((RTC_CNTL_DBG_ATTEN_V)<<(RTC_CNTL_DBG_ATTEN_S))
 #define RTC_CNTL_DBG_ATTEN_V  0x3
 #define RTC_CNTL_DBG_ATTEN_S  24
-
+#define RTC_CNTL_DBG_ATTEN_DEFAULT  3
 #define RTC_CNTL_REG          (DR_REG_RTCCNTL_BASE + 0x7c)
 /* RTC_CNTL_FORCE_PU : R/W ;bitpos:[31] ;default: 1'd1 ; */
 /*description: RTC_REG force power up*/
@@ -1717,6 +1718,7 @@
 #define RTC_WDT_STG_SEL_INT             1
 #define RTC_WDT_STG_SEL_RESET_CPU       2
 #define RTC_WDT_STG_SEL_RESET_SYSTEM    3
+#define RTC_WDT_STG_SEL_RESET_RTC       4
 
 #define RTC_CNTL_WDTCONFIG1_REG          (DR_REG_RTCCNTL_BASE + 0x90)
 /* RTC_CNTL_WDT_STG0_HOLD : R/W ;bitpos:[31:0] ;default: 32'd128000 ; */
@@ -1828,7 +1830,16 @@
 #define RTC_CNTL_SCRATCH7_V  0xFFFFFFFF
 #define RTC_CNTL_SCRATCH7_S  0
 
-#define RTC_CNTL_DIAG0_REG          (DR_REG_RTCCNTL_BASE + 0xc0)
+#define RTC_CNTL_LOW_POWER_ST_REG          (DR_REG_RTCCNTL_BASE + 0xc0)
+/* RTC_CNTL_RDY_FOR_WAKEUP : R/0; bitpos:[19]; default: 0 */
+/*description: 1 if RTC controller is ready to execute WAKE instruction, 0 otherwise */
+#define RTC_CNTL_RDY_FOR_WAKEUP  (BIT(19))
+#define RTC_CNTL_RDY_FOR_WAKEUP_M  (BIT(19))
+#define RTC_CNTL_RDY_FOR_WAKEUP_V  0x1
+#define RTC_CNTL_RDY_FOR_WAKEUP_S  19
+
+/* Compatibility definition */
+#define RTC_CNTL_DIAG0_REG RTC_CNTL_LOW_POWER_ST_REG
 /* RTC_CNTL_LOW_POWER_DIAG0 : RO ;bitpos:[31:0] ;default: 0 ; */
 /*description: */
 #define RTC_CNTL_LOW_POWER_DIAG0  0xFFFFFFFF

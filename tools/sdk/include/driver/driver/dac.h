@@ -21,6 +21,7 @@ extern "C" {
 
 #include <stdint.h>
 #include "esp_err.h"
+#include "soc/dac_channel.h"
 
 typedef enum {
     DAC_CHANNEL_1 = 1,  /*!< DAC channel 1 is GPIO25 */
@@ -28,7 +29,20 @@ typedef enum {
     DAC_CHANNEL_MAX,
 } dac_channel_t;
 
+/**
+ * @brief Get the gpio number of a specific DAC channel.
+ * 
+ * @param channel Channel to get the gpio number
+ * 
+ * @param gpio_num output buffer to hold the gpio number
+ * 
+ * @return 
+ *   - ESP_OK if success
+ *   - ESP_ERR_INVALID_ARG if channal not valid 
+ */
+esp_err_t dac_pad_get_io_num(dac_channel_t channel, gpio_num_t *gpio_num);
 
+/** @cond */
 /**
   * @brief  Set DAC output voltage.
   *
@@ -45,6 +59,7 @@ typedef enum {
   *     - ESP_ERR_INVALID_ARG Parameter error
   */
 esp_err_t dac_out_voltage(dac_channel_t channel, uint8_t dac_value) __attribute__ ((deprecated));
+/** @endcond */
 
 /**
  * @brief Set DAC output voltage.

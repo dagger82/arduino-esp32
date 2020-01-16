@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <MD5Builder.h>
+#include <functional>
 #include "esp_partition.h"
 
 #define UPDATE_ERROR_OK                 (0)
@@ -27,12 +28,20 @@
 
 class UpdateClass {
   public:
+    typedef std::function<void(size_t, size_t)> THandlerFunction_Progress;
+
     UpdateClass();
+
+    /*
+      This callback will be called when Update is receiving data
+    */
+    UpdateClass& onProgress(THandlerFunction_Progress fn);
+
     /*
       Call this to check the space needed for the update
       Will return false if there is not enough space
     */
-    bool begin(size_t size=UPDATE_SIZE_UNKNOWN, int command = U_FLASH);
+    bool begin(size_t size=UPDATE_SIZE_UNKNOWN, int command = U_FLASH, int ledPin = -1, uint8_t ledOn = LOW);
 
     /*
       Writes a buffer to the flash and increments the address
@@ -53,7 +62,7 @@ class UpdateClass {
       If all bytes are written
       this call will write the config to eboot
       and return true
-      If there is already an update running but is not finished and !evenIfRemainanig
+      If there is already an update running but is not finished and !evenIfRemaining
       or there is an error
       this will clear everything and return false
       the last error is available through getError()
@@ -70,6 +79,8 @@ class UpdateClass {
       Prints the last error to an output stream
     */
     void printError(Stream &out);
+
+    const char * errorString();
 
     /*
       sets the expected MD5 for the firmware (hexString)
@@ -137,6 +148,15 @@ class UpdateClass {
       return written;
     }
 
+    /*
+      check if there is a firmware on the other OTA partition that you can bootinto
+    */
+    bool canRollBack();
+    /*
+      set the other OTA partition as bootable (reboot to enable)
+    */
+    bool rollBack();
+
   private:
     void _reset();
     void _abort(uint8_t err);
@@ -144,16 +164,21 @@ class UpdateClass {
     bool _verifyHeader(uint8_t data);
     bool _verifyEnd();
 
+
     uint8_t _error;
     uint8_t *_buffer;
     size_t _bufferLen;
     size_t _size;
+    THandlerFunction_Progress _progress_callback;
     uint32_t _progress;
     uint32_t _command;
     const esp_partition_t* _partition;
 
     String _target_md5;
     MD5Builder _md5;
+
+    int _ledPin;
+    uint8_t _ledOn;
 };
 
 extern UpdateClass Update;

@@ -22,7 +22,6 @@
 #include "esp_attr.h"
 #include "esp_intr.h"
 
-#define HWTIMER_INUM 10
 #define HWTIMER_LOCK()      portENTER_CRITICAL(timer->lock)
 #define HWTIMER_UNLOCK()    portEXIT_CRITICAL(timer->lock)
 
@@ -66,7 +65,7 @@ static hw_timer_t hw_timer[4] = {
 };
 
 typedef void (*voidFuncPtr)(void);
-static voidFuncPtr __timerInterruptHandlers[4] = {0,};
+static voidFuncPtr __timerInterruptHandlers[4] = {0,0,0,0};
 
 void IRAM_ATTR __timerISR(void * arg){
     uint32_t s0 = TIMERG0.int_st_timers.val;
@@ -79,19 +78,14 @@ void IRAM_ATTR __timerISR(void * arg){
     while(i--){
         hw_timer_reg_t * dev = hw_timer[i].dev;
         if((status & (1 << i)) && dev->config.autoreload){
-            dev->load_high = 0;
-            dev->load_low = 0;
-            dev->reload = 1;
             dev->config.alarm_en = 1;
         }
     }
     i = 4;
     //call callbacks
     while(i--){
-        if(status & (1 << i)){
-            if(__timerInterruptHandlers[i]){
-                __timerInterruptHandlers[i]();
-            }
+        if(__timerInterruptHandlers[i] && (status & (1 << i))){
+            __timerInterruptHandlers[i]();
         }
     }
 }
@@ -171,6 +165,7 @@ void timerStop(hw_timer_t *timer){
 
 void timerRestart(hw_timer_t *timer){
     timer->dev->config.enable = 0;
+    timer->dev->reload = 1;
     timer->dev->config.enable = 1;
 }
 
@@ -190,7 +185,17 @@ bool timerAlarmEnabled(hw_timer_t *timer){
     return timer->dev->config.alarm_en;
 }
 
-
+static void _on_apb_change(void * arg, apb_change_ev_t ev_type, uint32_t old_apb, uint32_t new_apb){
+    hw_timer_t * timer = (hw_timer_t *)arg;
+    if(ev_type == APB_BEFORE_CHANGE){
+        timer->dev->config.enable = 0;
+    } else {
+        old_apb /= 1000000;
+        new_apb /= 1000000;
+        timer->dev->config.divider = (new_apb * timer->dev->config.divider) / old_apb;
+        timer->dev->config.enable = 1;
+    }
+}
 
 hw_timer_t * timerBegin(uint8_t num, uint16_t divider, bool countUp){
     if(num > 3){
@@ -213,17 +218,22 @@ hw_timer_t * timerBegin(uint8_t num, uint16_t divider, bool countUp){
     timerAttachInterrupt(timer, NULL, false);
     timerWrite(timer, 0);
     timer->dev->config.enable = 1;
+    addApbChangeCallback(timer, _on_apb_change);
     return timer;
 }
 
 void timerEnd(hw_timer_t *timer){
     timer->dev->config.enable = 0;
     timerAttachInterrupt(timer, NULL, false);
+    removeApbChangeCallback(timer, _on_apb_change);
 }
 
 void timerAttachInterrupt(hw_timer_t *timer, void (*fn)(void), bool edge){
     static bool initialized = false;
-    ESP_INTR_DISABLE(HWTIMER_INUM);
+    static intr_handle_t intr_handle = NULL;
+    if(intr_handle){
+        esp_intr_disable(intr_handle);
+    }
     if(fn == NULL){
         timer->dev->config.level_int_en = 0;
         timer->dev->config.edge_int_en = 0;
@@ -235,10 +245,6 @@ void timerAttachInterrupt(hw_timer_t *timer, void (*fn)(void), bool edge){
         }
         __timerInterruptHandlers[timer->num] = NULL;
     } else {
-        if(!initialized){
-            xt_set_interrupt_handler(HWTIMER_INUM, &__timerISR, NULL);
-            initialized = true;
-        }
         __timerInterruptHandlers[timer->num] = fn;
         timer->dev->config.level_int_en = edge?0:1;//When set, an alarm will generate a level type interrupt.
         timer->dev->config.edge_int_en = edge?1:0;//When set, an alarm will generate an edge type interrupt.
@@ -256,14 +262,21 @@ void timerAttachInterrupt(hw_timer_t *timer, void (*fn)(void), bool edge){
                 intr_source = ETS_TG0_T0_EDGE_INTR_SOURCE + timer->timer;
             }
         }
-        intr_matrix_set(xPortGetCoreID(), intr_source, HWTIMER_INUM);
+        if(!initialized){
+            initialized = true;
+            esp_intr_alloc(intr_source, (int)(ESP_INTR_FLAG_IRAM|ESP_INTR_FLAG_LOWMED|ESP_INTR_FLAG_EDGE), __timerISR, NULL, &intr_handle);
+        } else {
+            intr_matrix_set(esp_intr_get_cpu(intr_handle), intr_source, esp_intr_get_intno(intr_handle));
+        }
         if(timer->group){
             TIMERG1.int_ena.val |= BIT(timer->timer);
         } else {
             TIMERG0.int_ena.val |= BIT(timer->timer);
         }
     }
-    ESP_INTR_ENABLE(HWTIMER_INUM);
+    if(intr_handle){
+        esp_intr_enable(intr_handle);
+    }
 }
 
 void timerDetachInterrupt(hw_timer_t *timer){
@@ -273,23 +286,23 @@ void timerDetachInterrupt(hw_timer_t *timer){
 uint64_t timerReadMicros(hw_timer_t *timer){
     uint64_t timer_val = timerRead(timer);
     uint16_t div = timerGetDivider(timer);
-    return timer_val * div / 80;
+    return timer_val * div / (getApbFrequency() / 1000000);
 }
 
 double timerReadSeconds(hw_timer_t *timer){
     uint64_t timer_val = timerRead(timer);
     uint16_t div = timerGetDivider(timer);
-    return (double)timer_val * div / 80000000;
+    return (double)timer_val * div / getApbFrequency();
 }
 
 uint64_t timerAlarmReadMicros(hw_timer_t *timer){
     uint64_t timer_val = timerAlarmRead(timer);
     uint16_t div = timerGetDivider(timer);
-    return timer_val * div / 80;
+    return timer_val * div / (getApbFrequency() / 1000000);
 }
 
 double timerAlarmReadSeconds(hw_timer_t *timer){
     uint64_t timer_val = timerAlarmRead(timer);
     uint16_t div = timerGetDivider(timer);
-    return (double)timer_val * div / 80000000;
+    return (double)timer_val * div / getApbFrequency();
 }

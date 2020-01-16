@@ -26,6 +26,7 @@
 #include "soc/io_mux_reg.h"
 #include "soc/gpio_sig_map.h"
 #include "soc/dport_reg.h"
+#include "soc/rtc.h"
 
 #define SPI_CLK_IDX(p)  ((p==0)?SPICLK_OUT_IDX:((p==1)?SPICLK_OUT_IDX:((p==2)?HSPICLK_OUT_IDX:((p==3)?VSPICLK_OUT_IDX:0))))
 #define SPI_MISO_IDX(p) ((p==0)?SPIQ_OUT_IDX:((p==1)?SPIQ_OUT_IDX:((p==2)?HSPIQ_OUT_IDX:((p==3)?VSPIQ_OUT_IDX:0))))
@@ -309,9 +310,9 @@ uint8_t spiGetDataMode(spi_t * spi)
     bool outEdge = spi->dev->user.ck_out_edge;
     if(idleEdge) {
         if(outEdge) {
-            return SPI_MODE3;
+            return SPI_MODE2;
         }
-        return SPI_MODE2;
+        return SPI_MODE3;
     }
     if(outEdge) {
         return SPI_MODE1;
@@ -371,6 +372,18 @@ void spiSetBitOrder(spi_t * spi, uint8_t bitOrder)
     SPI_MUTEX_UNLOCK();
 }
 
+static void _on_apb_change(void * arg, apb_change_ev_t ev_type, uint32_t old_apb, uint32_t new_apb)
+{
+    spi_t * spi = (spi_t *)arg;
+    if(ev_type == APB_BEFORE_CHANGE){
+        SPI_MUTEX_LOCK();
+        while(spi->dev->cmd.usr);
+    } else {
+        spi->dev->clock.val = spiFrequencyToClockDiv(old_apb / ((spi->dev->clock.clkdiv_pre + 1) * (spi->dev->clock.clkcnt_n + 1)));
+        SPI_MUTEX_UNLOCK();
+    }
+}
+
 void spiStopBus(spi_t * spi)
 {
     if(!spi) {
@@ -387,6 +400,7 @@ void spiStopBus(spi_t * spi)
     spi->dev->ctrl2.val = 0;
     spi->dev->clock.val = 0;
     SPI_MUTEX_UNLOCK();
+    removeApbChangeCallback(spi, _on_apb_change);
 }
 
 spi_t * spiStartBus(uint8_t spi_num, uint32_t clockDiv, uint8_t dataMode, uint8_t bitOrder)
@@ -407,14 +421,14 @@ spi_t * spiStartBus(uint8_t spi_num, uint32_t clockDiv, uint8_t dataMode, uint8_
 #endif
 
     if(spi_num == HSPI) {
-        DPORT_SET_PERI_REG_MASK(DPORT_PERIP_CLK_EN_REG, DPORT_SPI_CLK_EN_1);
-        DPORT_CLEAR_PERI_REG_MASK(DPORT_PERIP_RST_EN_REG, DPORT_SPI_RST_1);
+        DPORT_SET_PERI_REG_MASK(DPORT_PERIP_CLK_EN_REG, DPORT_SPI_CLK_EN);
+        DPORT_CLEAR_PERI_REG_MASK(DPORT_PERIP_RST_EN_REG, DPORT_SPI_RST);
     } else if(spi_num == VSPI) {
         DPORT_SET_PERI_REG_MASK(DPORT_PERIP_CLK_EN_REG, DPORT_SPI_CLK_EN_2);
         DPORT_CLEAR_PERI_REG_MASK(DPORT_PERIP_RST_EN_REG, DPORT_SPI_RST_2);
     } else {
-        DPORT_SET_PERI_REG_MASK(DPORT_PERIP_CLK_EN_REG, DPORT_SPI_CLK_EN);
-        DPORT_CLEAR_PERI_REG_MASK(DPORT_PERIP_RST_EN_REG, DPORT_SPI_RST);
+        DPORT_SET_PERI_REG_MASK(DPORT_PERIP_CLK_EN_REG, DPORT_SPI_CLK_EN_1);
+        DPORT_CLEAR_PERI_REG_MASK(DPORT_PERIP_RST_EN_REG, DPORT_SPI_RST_1);
     }
 
     spiStopBus(spi);
@@ -433,6 +447,7 @@ spi_t * spiStartBus(uint8_t spi_num, uint32_t clockDiv, uint8_t dataMode, uint8_
     }
     SPI_MUTEX_UNLOCK();
 
+    addApbChangeCallback(spi, _on_apb_change);
     return spi;
 }
 
@@ -444,7 +459,7 @@ void spiWaitReady(spi_t * spi)
     while(spi->dev->cmd.usr);
 }
 
-void spiWrite(spi_t * spi, uint32_t *data, uint8_t len)
+void spiWrite(spi_t * spi, const uint32_t *data, uint8_t len)
 {
     if(!spi) {
         return;
@@ -517,17 +532,7 @@ uint8_t spiTransferByte(spi_t * spi, uint8_t data)
     return data;
 }
 
-uint32_t __spiTranslate24(uint32_t data)
-{
-    union {
-        uint32_t l;
-        uint8_t b[4];
-    } out;
-    out.l = data;
-    return out.b[2] | (out.b[1] << 8) | (out.b[0] << 16);
-}
-
-uint32_t __spiTranslate32(uint32_t data)
+static uint32_t __spiTranslate32(uint32_t data)
 {
     union {
         uint32_t l;
@@ -615,7 +620,7 @@ uint32_t spiTransferLong(spi_t * spi, uint32_t data)
     return data;
 }
 
-void __spiTransferBytes(spi_t * spi, uint8_t * data, uint8_t * out, uint32_t bytes)
+static void __spiTransferBytes(spi_t * spi, const uint8_t * data, uint8_t * out, uint32_t bytes)
 {
     if(!spi) {
         return;
@@ -656,7 +661,7 @@ void __spiTransferBytes(spi_t * spi, uint8_t * data, uint8_t * out, uint32_t byt
     }
 }
 
-void spiTransferBytes(spi_t * spi, uint8_t * data, uint8_t * out, uint32_t size)
+void spiTransferBytes(spi_t * spi, const uint8_t * data, uint8_t * out, uint32_t size)
 {
     if(!spi) {
         return;
@@ -677,6 +682,16 @@ void spiTransferBytes(spi_t * spi, uint8_t * data, uint8_t * out, uint32_t size)
             size = 0;
         }
     }
+    SPI_MUTEX_UNLOCK();
+}
+
+void spiTransferBits(spi_t * spi, uint32_t data, uint32_t * out, uint8_t bits)
+{
+    if(!spi) {
+        return;
+    }
+    SPI_MUTEX_LOCK();
+    spiTransferBitsNL(spi, data, out, bits);
     SPI_MUTEX_UNLOCK();
 }
 
@@ -703,11 +718,11 @@ void spiTransaction(spi_t * spi, uint32_t clockDiv, uint8_t dataMode, uint8_t bi
             break;
         case SPI_MODE2:
             spi->dev->pin.ck_idle_edge = 1;
-            spi->dev->user.ck_out_edge = 0;
+            spi->dev->user.ck_out_edge = 1;
             break;
         case SPI_MODE3:
             spi->dev->pin.ck_idle_edge = 1;
-            spi->dev->user.ck_out_edge = 1;
+            spi->dev->user.ck_out_edge = 0;
             break;
         case SPI_MODE0:
         default:
@@ -740,7 +755,7 @@ void spiEndTransaction(spi_t * spi)
     SPI_MUTEX_UNLOCK();
 }
 
-void spiWriteByteNL(spi_t * spi, uint8_t data)
+void IRAM_ATTR spiWriteByteNL(spi_t * spi, uint8_t data)
 {
     if(!spi) {
         return;
@@ -766,7 +781,7 @@ uint8_t spiTransferByteNL(spi_t * spi, uint8_t data)
     return data;
 }
 
-void spiWriteShortNL(spi_t * spi, uint16_t data)
+void IRAM_ATTR spiWriteShortNL(spi_t * spi, uint16_t data)
 {
     if(!spi) {
         return;
@@ -801,7 +816,7 @@ uint16_t spiTransferShortNL(spi_t * spi, uint16_t data)
     return data;
 }
 
-void spiWriteLongNL(spi_t * spi, uint32_t data)
+void IRAM_ATTR spiWriteLongNL(spi_t * spi, uint32_t data)
 {
     if(!spi) {
         return;
@@ -836,7 +851,7 @@ uint32_t spiTransferLongNL(spi_t * spi, uint32_t data)
     return data;
 }
 
-void spiWriteNL(spi_t * spi, const void * data_in, size_t len){
+void spiWriteNL(spi_t * spi, const void * data_in, uint32_t len){
     size_t longs = len >> 2;
     if(len & 3){
         longs++;
@@ -862,7 +877,7 @@ void spiWriteNL(spi_t * spi, const void * data_in, size_t len){
     }
 }
 
-void spiTransferBytesNL(spi_t * spi, const void * data_in, uint8_t * data_out, size_t len){
+void spiTransferBytesNL(spi_t * spi, const void * data_in, uint8_t * data_out, uint32_t len){
     if(!spi) {
         return;
     }
@@ -949,7 +964,7 @@ void spiTransferBitsNL(spi_t * spi, uint32_t data, uint32_t * out, uint8_t bits)
     }
 }
 
-void spiWritePixelsNL(spi_t * spi, const void * data_in, size_t len){
+void IRAM_ATTR spiWritePixelsNL(spi_t * spi, const void * data_in, uint32_t len){
     size_t longs = len >> 2;
     if(len & 3){
         longs++;
@@ -997,35 +1012,37 @@ void spiWritePixelsNL(spi_t * spi, const void * data_in, size_t len){
  * */
 
 typedef union {
-    uint32_t regValue;
+    uint32_t value;
     struct {
-        unsigned regL :6;
-        unsigned regH :6;
-        unsigned regN :6;
-        unsigned regPre :13;
-        unsigned regEQU :1;
+            uint32_t clkcnt_l:       6;                     /*it must be equal to spi_clkcnt_N.*/
+            uint32_t clkcnt_h:       6;                     /*it must be floor((spi_clkcnt_N+1)/2-1).*/
+            uint32_t clkcnt_n:       6;                     /*it is the divider of spi_clk. So spi_clk frequency is system/(spi_clkdiv_pre+1)/(spi_clkcnt_N+1)*/
+            uint32_t clkdiv_pre:    13;                     /*it is pre-divider of spi_clk.*/
+            uint32_t clk_equ_sysclk: 1;                     /*1: spi_clk is eqaul to system 0: spi_clk is divided from system clock.*/
     };
 } spiClk_t;
 
-#define ClkRegToFreq(reg) (CPU_CLK_FREQ / (((reg)->regPre + 1) * ((reg)->regN + 1)))
+#define ClkRegToFreq(reg) (apb_freq / (((reg)->clkdiv_pre + 1) * ((reg)->clkcnt_n + 1)))
 
 uint32_t spiClockDivToFrequency(uint32_t clockDiv)
 {
+    uint32_t apb_freq = getApbFrequency();
     spiClk_t reg = { clockDiv };
     return ClkRegToFreq(&reg);
 }
 
 uint32_t spiFrequencyToClockDiv(uint32_t freq)
 {
+    uint32_t apb_freq = getApbFrequency();
 
-    if(freq >= CPU_CLK_FREQ) {
+    if(freq >= apb_freq) {
         return SPI_CLK_EQU_SYSCLK;
     }
 
     const spiClk_t minFreqReg = { 0x7FFFF000 };
     uint32_t minFreq = ClkRegToFreq((spiClk_t*) &minFreqReg);
     if(freq < minFreq) {
-        return minFreqReg.regValue;
+        return minFreqReg.value;
     }
 
     uint8_t calN = 1;
@@ -1038,18 +1055,18 @@ uint32_t spiFrequencyToClockDiv(uint32_t freq)
         int32_t calPre;
         int8_t calPreVari = -2;
 
-        reg.regN = calN;
+        reg.clkcnt_n = calN;
 
         while(calPreVari++ <= 1) {
-            calPre = (((CPU_CLK_FREQ / (reg.regN + 1)) / freq) - 1) + calPreVari;
+            calPre = (((apb_freq / (reg.clkcnt_n + 1)) / freq) - 1) + calPreVari;
             if(calPre > 0x1FFF) {
-                reg.regPre = 0x1FFF;
+                reg.clkdiv_pre = 0x1FFF;
             } else if(calPre <= 0) {
-                reg.regPre = 0;
+                reg.clkdiv_pre = 0;
             } else {
-                reg.regPre = calPre;
+                reg.clkdiv_pre = calPre;
             }
-            reg.regL = ((reg.regN + 1) / 2);
+            reg.clkcnt_l = ((reg.clkcnt_n + 1) / 2);
             calFreq = ClkRegToFreq(&reg);
             if(calFreq == (int32_t) freq) {
                 memcpy(&bestReg, &reg, sizeof(bestReg));
@@ -1066,6 +1083,6 @@ uint32_t spiFrequencyToClockDiv(uint32_t freq)
         }
         calN++;
     }
-    return bestReg.regValue;
+    return bestReg.value;
 }
 

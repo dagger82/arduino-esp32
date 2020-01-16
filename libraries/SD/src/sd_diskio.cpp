@@ -16,7 +16,7 @@ extern "C" {
     #include "diskio.h"
     #include "ffconf.h"
     #include "ff.h"
-    #include "esp_vfs.h"
+    //#include "esp_vfs.h"
     #include "esp_vfs_fat.h"
     char CRC7(const char* data, int length);
     unsigned short CRC16(const char* data, int length);
@@ -57,7 +57,7 @@ typedef struct {
     int status;
 } ardu_sdcard_t;
 
-static ardu_sdcard_t* s_cards[_VOLUMES] = { NULL };
+static ardu_sdcard_t* s_cards[FF_VOLUMES] = { NULL };
 
 /*
  * SD SPI
@@ -84,22 +84,14 @@ void sdDeselectCard(uint8_t pdrv)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
     digitalWrite(card->ssPin, HIGH);
-    card->spi->write(0xFF);
 }
 
 bool sdSelectCard(uint8_t pdrv)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
     digitalWrite(card->ssPin, LOW);
-    card->spi->write(0xFF);
-
-    if (sdWait(pdrv, 500)) {
-        return true;
-    } else {
-        log_e("timeout");
-        sdDeselectCard(pdrv);
-        return false;
-    }
+    sdWait(pdrv, 300);
+    return true;
 }
 
 char sdCommand(uint8_t pdrv, char cmd, unsigned int arg, unsigned int* resp)
@@ -425,10 +417,32 @@ unsigned long sdGetSectorsCount(uint8_t pdrv)
 }
 
 
+namespace
+{
 
+struct AcquireSPI
+{
+    ardu_sdcard_t *card;
+    explicit AcquireSPI(ardu_sdcard_t* card)
+        : card(card)
+    {
+        card->spi->beginTransaction(SPISettings(card->frequency, MSBFIRST, SPI_MODE0));
+    }
+    AcquireSPI(ardu_sdcard_t* card, int frequency)
+        : card(card)
+    {
+        card->spi->beginTransaction(SPISettings(frequency, MSBFIRST, SPI_MODE0));
+    }
+    ~AcquireSPI()
+    {
+        card->spi->endTransaction();
+    }
+private:
+    AcquireSPI(AcquireSPI const&);
+    AcquireSPI& operator=(AcquireSPI const&);
+};
 
-
-
+}
 
 
 /*
@@ -446,7 +460,12 @@ DSTATUS ff_sd_initialize(uint8_t pdrv)
         return card->status;
     }
 
-    card->spi->beginTransaction(SPISettings(400000, MSBFIRST, SPI_MODE0));
+    AcquireSPI card_locked(card, 400000);
+
+    digitalWrite(card->ssPin, HIGH);
+    for (uint8_t i = 0; i < 20; i++) {
+        card->spi->transfer(0XFF);
+    }
 
     if (sdTransaction(pdrv, GO_IDLE_STATE, 0, NULL) != 1) {
         log_w("GO_IDLE_STATE failed");
@@ -541,13 +560,10 @@ DSTATUS ff_sd_initialize(uint8_t pdrv)
         card->frequency = 25000000;
     }
 
-    card->spi->endTransaction();
-
     card->status &= ~STA_NOINIT;
     return card->status;
 
 unknown_card:
-    card->spi->endTransaction();
     card->type = CARD_UNKNOWN;
     return card->status;
 }
@@ -565,15 +581,13 @@ DRESULT ff_sd_read(uint8_t pdrv, uint8_t* buffer, DWORD sector, UINT count)
     }
     DRESULT res = RES_OK;
 
-    card->spi->beginTransaction(SPISettings(card->frequency, MSBFIRST, SPI_MODE0));
+    AcquireSPI lock(card);
 
     if (count > 1) {
         res = sdReadSectors(pdrv, (char*)buffer, sector, count) ? RES_OK : RES_ERROR;
     } else {
         res = sdReadSector(pdrv, (char*)buffer, sector) ? RES_OK : RES_ERROR;
     }
-
-    card->spi->endTransaction();
     return res;
 }
 
@@ -589,14 +603,12 @@ DRESULT ff_sd_write(uint8_t pdrv, const uint8_t* buffer, DWORD sector, UINT coun
     }
     DRESULT res = RES_OK;
 
-    card->spi->beginTransaction(SPISettings(card->frequency, MSBFIRST, SPI_MODE0));
+    AcquireSPI lock(card);
 
     if (count > 1) {
         res = sdWriteSectors(pdrv, (const char*)buffer, sector, count) ? RES_OK : RES_ERROR;
     }
     res = sdWriteSector(pdrv, (const char*)buffer, sector) ? RES_OK : RES_ERROR;
-
-    card->spi->endTransaction();
     return res;
 }
 
@@ -604,19 +616,22 @@ DRESULT ff_sd_ioctl(uint8_t pdrv, uint8_t cmd, void* buff)
 {
     switch(cmd) {
     case CTRL_SYNC:
-        if (sdSelectCard(pdrv)) {
-            sdDeselectCard(pdrv);
-            return RES_OK;
+        {
+            AcquireSPI lock(s_cards[pdrv]);
+            if (sdSelectCard(pdrv)) {
+                sdDeselectCard(pdrv);
+                return RES_OK;
+            }
         }
         return RES_ERROR;
     case GET_SECTOR_COUNT:
         *((unsigned long*) buff) = s_cards[pdrv]->sectors;
         return RES_OK;
     case GET_SECTOR_SIZE:
-        *((unsigned long*) buff) = 512;
+        *((WORD*) buff) = 512;
         return RES_OK;
     case GET_BLOCK_SIZE:
-        *((unsigned long*)buff) = 1;
+        *((uint32_t*)buff) = 1;
         return RES_OK;
     }
     return RES_PARERR;
@@ -630,7 +645,7 @@ DRESULT ff_sd_ioctl(uint8_t pdrv, uint8_t cmd, void* buff)
 uint8_t sdcard_uninit(uint8_t pdrv)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
-    if (pdrv >= _VOLUMES || card == NULL) {
+    if (pdrv >= FF_VOLUMES || card == NULL) {
         return 1;
     }
     ff_diskio_register(pdrv, NULL);
@@ -685,7 +700,7 @@ uint8_t sdcard_init(uint8_t cs, SPIClass * spi, int hz)
 uint8_t sdcard_unmount(uint8_t pdrv)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
-    if (pdrv >= _VOLUMES || card == NULL) {
+    if (pdrv >= FF_VOLUMES || card == NULL) {
         return 1;
     }
     card->status |= STA_NOINIT;
@@ -696,10 +711,10 @@ uint8_t sdcard_unmount(uint8_t pdrv)
     return 0;
 }
 
-bool sdcard_mount(uint8_t pdrv, const char* path)
+bool sdcard_mount(uint8_t pdrv, const char* path, uint8_t max_files)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
-    if(pdrv >= _VOLUMES || card == NULL){
+    if(pdrv >= FF_VOLUMES || card == NULL){
         return false;
     }
 
@@ -710,7 +725,7 @@ bool sdcard_mount(uint8_t pdrv, const char* path)
 
     FATFS* fs;
     char drv[3] = {(char)('0' + pdrv), ':', 0};
-    esp_err_t err = esp_vfs_fat_register(path, drv, 5, &fs);
+    esp_err_t err = esp_vfs_fat_register(path, drv, max_files, &fs);
     if (err == ESP_ERR_INVALID_STATE) {
         log_e("esp_vfs_fat_register failed 0x(%x): SD is registered.", err);
         return false;
@@ -725,6 +740,7 @@ bool sdcard_mount(uint8_t pdrv, const char* path)
         esp_vfs_fat_unregister_path(path);
         return false;
     }
+    AcquireSPI lock(card);
     card->sectors = sdGetSectorsCount(pdrv);
     return true;
 }
@@ -732,7 +748,7 @@ bool sdcard_mount(uint8_t pdrv, const char* path)
 uint32_t sdcard_num_sectors(uint8_t pdrv)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
-    if(pdrv >= _VOLUMES || card == NULL){
+    if(pdrv >= FF_VOLUMES || card == NULL){
         return 0;
     }
     return card->sectors;
@@ -740,7 +756,7 @@ uint32_t sdcard_num_sectors(uint8_t pdrv)
 
 uint32_t sdcard_sector_size(uint8_t pdrv)
 {
-    if(pdrv >= _VOLUMES || s_cards[pdrv] == NULL){
+    if(pdrv >= FF_VOLUMES || s_cards[pdrv] == NULL){
         return 0;
     }
     return 512;
@@ -749,7 +765,7 @@ uint32_t sdcard_sector_size(uint8_t pdrv)
 sdcard_type_t sdcard_type(uint8_t pdrv)
 {
     ardu_sdcard_t * card = s_cards[pdrv];
-    if(pdrv >= _VOLUMES || card == NULL){
+    if(pdrv >= FF_VOLUMES || card == NULL){
         return CARD_NONE;
     }
     return card->type;
